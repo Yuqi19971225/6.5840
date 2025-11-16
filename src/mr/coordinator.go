@@ -17,8 +17,9 @@ type Coordinator struct {
 	nReduce           int           // number of reduce tasks
 	mapTasks          []*TaskStatus // "idle", "in-progress", "completed"
 	reduceTasks       []*TaskStatus // "idle", "in-progress", "completed"
+	files             []string      // input files
 	intermediateFiles [][]string    // intermdediate[mapTaskIndex][reduceTaskIndex] = filename
-	alldDone          bool
+	allDone           bool
 	mapTaskStart      map[int]time.Time // mapTaskStart[mapTaskIndex] = timestamp
 	reduceTaskStart   map[int]time.Time // reduceTaskStart[reduceTaskIndex] = timestamp
 }
@@ -45,9 +46,55 @@ type Task struct {
 	Inputfile []string // for map task
 	NMap      int      // number of map tasks
 	NReduce   int      // number of reduce tasks
+	Output    []string
 }
 
 // Your code here -- RPC handlers for the worker to call.
+func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
+	c.mu.Lock()
+	for i := range c.mapTasks {
+		if *c.mapTasks[i] == Idle {
+			*c.mapTasks[i] = InProgress
+			c.mapTaskStart[i] = time.Now()
+			reply.Task = Task{
+				Type:      MapTask,
+				Index:     i,
+				Inputfile: []string{c.files[i]},
+				NMap:      c.nMap,
+				NReduce:   c.nReduce,
+			}
+			c.mu.Unlock()
+			return nil
+		}
+	}
+	for i := range c.reduceTasks {
+		if *c.reduceTasks[i] == Idle {
+			*c.reduceTasks[i] = InProgress
+			c.reduceTaskStart[i] = time.Now()
+			reply.Task = Task{
+				Type:    ReduceTask,
+				Index:   i,
+				NMap:    c.nMap,
+				NReduce: c.nReduce,
+			}
+			c.mu.Unlock()
+			return nil
+		}
+	}
+	reply.allDone = true
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *Coordinator) TaskDone(args *TaskDoneArgs, reply *TaskDoneReply) error {
+	c.mu.Lock()
+	index := args.Task.Index
+	type := args.Task.Type
+	switch type {
+	case MapTask:
+		c.mapTaskStart[index] = Completed
+	}
+}
 
 // an example RPC handler.
 //
@@ -77,7 +124,18 @@ func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
-
+	for i := range c.mapTasks {
+		if *c.mapTasks[i] != Completed {
+			return ret
+		}
+	}
+	for i := range c.reduceTasks {
+		if *c.reduceTasks[i] != Completed {
+			return ret
+		}
+	}
+	c.allDone = true
+	ret = c.allDone
 	return ret
 }
 

@@ -1,48 +1,105 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
+import (
+	"fmt"
+	"hash/fnv"
+	"log"
+	"net/rpc"
+	"os"
+	"strings"
+)
 
-
-//
 // Map functions return a slice of KeyValue.
-//
 type KeyValue struct {
 	Key   string
 	Value string
 }
 
-//
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
-//
 func ihash(key string) int {
 	h := fnv.New32a()
 	h.Write([]byte(key))
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-
-//
 // main/mrworker.go calls this function.
-//
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
 	// Your worker implementation here.
+	for {
+		args := GetTaskArgs{}
+		reply := GetTaskReply{}
+		err := call("Coordinator.GetTask", &args, &reply)
+		if err {
+			log.Fatalf("GetTask RPC call failed")
+			break
+		}
+		if reply.allDone {
+			fmt.Println("All tasks are done. Worker exiting.")
+			break
+		}
 
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
+		switch reply.Task.Type {
+		case MapTask:
+			// Process map task
+			fmt.Printf("Worker received Map task %d\n", reply.Task.Index)
+			doMap(reply.Task)
+		case ReduceTask:
+			// Process reduce task
+			fmt.Printf("Worker received Reduce task %d\n", reply.Task.Index)
+			//doReduce(reply.Task)
+		default:
+			// Unknown task type
+			log.Fatalf("Unknown task type received: %v", reply.Task.Type)
+		}
 
+		doneAargs := TaskDoneArgs{
+			Task: reply.Task,
+		}
+		doneReply := TaskDoneReply{}
+		call("Coordinator.TaskDone", &doneAargs, &doneReply)
+		// uncomment to send the Example RPC to the coordinator.
+		// CallExample()
+	}
 }
 
-//
+func doMap(task Task) {
+	filepath := task.Inputfile[0]
+	content, err := os.ReadFile(filepath)
+	if err != nil {
+		log.Fatalf("cannot read %v", filepath)
+		return
+	}
+	m := make(map[string]int)
+	for _, line := range strings.Split(string(content), "\n") {
+		for _, key := range strings.Split(line, " ") {
+			key = strings.TrimSpace(key)
+			m[key] = m[key] + 1
+		}
+	}
+	intediatefile := ""
+	retur intediatefile
+}
+
+
+
+//读取输入文件内容（reply.Task.InputFiles[0]）。
+//调用mapf(filename, content)得到[]KeyValue（中间结果）。
+//对每个KeyValue，按hash(key) % NReduce确定归属的 reduce 分区，写入对应临时文件。
+//生成中间文件路径（例如mr-map-0-1表示 map0 的 reduce1 分区），汇报给 master。
+
+func doReduce() {
+	//从 master 记录的中间文件路径（intermediate[mapIdx][reduceIdx]）读取所有 map 任务的对应分区数据。
+	//解析数据为[]KeyValue，按 key 排序（确保相同 key 连续）。
+	//合并相同 key 的 value 列表，调用reducef(key, values)得到结果。
+	//将结果写入输出文件（例如mr-out-1表示 reduce1 的输出）。
+}
+
 // example function to show how to make an RPC call to the coordinator.
 //
 // the RPC argument and reply types are defined in rpc.go.
-//
 func CallExample() {
 
 	// declare an argument structure.
@@ -67,11 +124,9 @@ func CallExample() {
 	}
 }
 
-//
 // send an RPC request to the coordinator, wait for the response.
 // usually returns true.
 // returns false if something goes wrong.
-//
 func call(rpcname string, args interface{}, reply interface{}) bool {
 	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
 	sockname := coordinatorSock()
