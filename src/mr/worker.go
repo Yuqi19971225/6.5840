@@ -45,7 +45,7 @@ func Worker(mapf func(string, string) []KeyValue,
 		case MapTask:
 			// Process map task
 			fmt.Printf("Worker received Map task %d\n", reply.Task.Index)
-			doMap(reply.Task)
+			doMap(reply.Task, mapf)
 		case ReduceTask:
 			// Process reduce task
 			fmt.Printf("Worker received Reduce task %d\n", reply.Task.Index)
@@ -65,33 +65,29 @@ func Worker(mapf func(string, string) []KeyValue,
 	}
 }
 
-func doMap(task Task) {
+func doMap(task Task, mapf func(string, string) []KeyValue) {
 	filepath := task.Inputfile[0]
 	content, err := os.ReadFile(filepath)
 	if err != nil {
 		log.Fatalf("cannot read %v", filepath)
 		return
 	}
-	m := make(map[string]int)
 	for _, line := range strings.Split(string(content), "\n") {
 		for _, key := range strings.Split(line, " ") {
-			key = strings.TrimSpace(key)
-			m[key] = m[key] + 1
+			res := mapf(key, key)
+			fmt.Printf("%v", res)
 		}
 	}
-	intediatefile := ""
-	retur intediatefile
 }
-
-
 
 //读取输入文件内容（reply.Task.InputFiles[0]）。
 //调用mapf(filename, content)得到[]KeyValue（中间结果）。
 //对每个KeyValue，按hash(key) % NReduce确定归属的 reduce 分区，写入对应临时文件。
 //生成中间文件路径（例如mr-map-0-1表示 map0 的 reduce1 分区），汇报给 master。
 
-func doReduce() {
+func doReduce(task Task, reducef func(string, []string) string) {
 	//从 master 记录的中间文件路径（intermediate[mapIdx][reduceIdx]）读取所有 map 任务的对应分区数据。
+
 	//解析数据为[]KeyValue，按 key 排序（确保相同 key 连续）。
 	//合并相同 key 的 value 列表，调用reducef(key, values)得到结果。
 	//将结果写入输出文件（例如mr-out-1表示 reduce1 的输出）。

@@ -29,7 +29,6 @@ type TaskType int
 const (
 	MapTask TaskType = iota
 	ReduceTask
-	DoneTask
 )
 
 type TaskStatus int
@@ -89,11 +88,19 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 func (c *Coordinator) TaskDone(args *TaskDoneArgs, reply *TaskDoneReply) error {
 	c.mu.Lock()
 	index := args.Task.Index
-	type := args.Task.Type
-	switch type {
+	taskType := args.Task.Type
+	switch taskType {
 	case MapTask:
-		c.mapTaskStart[index] = Completed
+		*c.mapTasks[index] = Completed
+		c.mu.Unlock()
+		return nil
+	case ReduceTask:
+		*c.reduceTasks[index] = Completed
+		c.mu.Unlock()
+		return nil
 	}
+	c.mu.Unlock()
+	return nil
 }
 
 // an example RPC handler.
