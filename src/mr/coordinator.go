@@ -76,7 +76,7 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 				Index:     j,
 				NMap:      c.nMap,
 				NReduce:   c.nReduce,
-				Inputfile: make([]string, c.nMap),
+				Inputfile: make([]string, 0),
 			}
 			for i := 0; i < c.nMap; i++ {
 				reply.Task.Inputfile = append(reply.Task.Inputfile, c.intermediateFiles[i][j])
@@ -98,7 +98,7 @@ func (c *Coordinator) TaskDone(args *TaskDoneArgs, reply *TaskDoneReply) error {
 	switch taskType {
 	case MapTask:
 		*c.mapTasks[index] = Completed
-		for i := 0; i < len(c.mapTasks); i++ {
+		for i := 0; i < c.nReduce; i++ {
 			c.intermediateFiles[index][i] = output[i]
 		}
 		c.mu.Unlock()

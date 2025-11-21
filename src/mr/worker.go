@@ -44,7 +44,7 @@ func Worker(mapf func(string, string) []KeyValue,
 		case MapTask:
 			// Process map task
 			fmt.Printf("Worker received Map task %d\n", reply.Task.Index)
-			doMap(reply.Task, mapf)
+			reply.Task.Output = doMap(reply.Task, mapf)
 		case ReduceTask:
 			// Process reduce task
 			fmt.Printf("Worker received Reduce task %d\n", reply.Task.Index)
@@ -64,7 +64,7 @@ func Worker(mapf func(string, string) []KeyValue,
 	}
 }
 
-func doMap(task Task, mapf func(string, string) []KeyValue) {
+func doMap(task Task, mapf func(string, string) []KeyValue) []string {
 	filepath := task.Inputfile[0]
 	content, err := os.ReadFile(filepath)
 	if err != nil {
@@ -94,6 +94,7 @@ func doMap(task Task, mapf func(string, string) []KeyValue) {
 		}
 		task.Output = append(task.Output, filename)
 	}
+	return task.Output
 }
 
 //读取输入文件内容（reply.Task.InputFiles[0]）。
