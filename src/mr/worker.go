@@ -6,7 +6,6 @@ import (
 	"log"
 	"net/rpc"
 	"os"
-	"strings"
 )
 
 // Map functions return a slice of KeyValue.
@@ -31,8 +30,8 @@ func Worker(mapf func(string, string) []KeyValue,
 	for {
 		args := GetTaskArgs{}
 		reply := GetTaskReply{}
-		err := call("Coordinator.GetTask", &args, &reply)
-		if err {
+		res := call("Coordinator.GetTask", &args, &reply)
+		if res == false {
 			log.Fatalf("GetTask RPC call failed")
 			break
 		}
@@ -40,16 +39,21 @@ func Worker(mapf func(string, string) []KeyValue,
 			fmt.Println("All tasks are done. Worker exiting.")
 			break
 		}
-
+		done_args := TaskDoneArgs{reply.Task}
+		done_reply := TaskDoneReply{}
 		switch reply.Task.Type {
 		case MapTask:
 			// Process map task
 			fmt.Printf("Worker received Map task %d\n", reply.Task.Index)
 			doMap(reply.Task, mapf)
+			res := call("Coordinator.TaskDone", &done_args, &done_reply)
+			if res == false {
+				log.Fatalf("Coordinator.TaskDone RPC call failed")
+			}
 		case ReduceTask:
 			// Process reduce task
 			fmt.Printf("Worker received Reduce task %d\n", reply.Task.Index)
-			//doReduce(reply.Task)
+			doReduce(reply.Task, reducef)
 		default:
 			// Unknown task type
 			log.Fatalf("Unknown task type received: %v", reply.Task.Type)
@@ -69,14 +73,18 @@ func doMap(task Task, mapf func(string, string) []KeyValue) {
 	filepath := task.Inputfile[0]
 	content, err := os.ReadFile(filepath)
 	if err != nil {
-		log.Fatalf("cannot read %v", filepath)
-		return
+		log.Fatalf("ReadFile %s failed: %v", filepath, err)
 	}
-	for _, line := range strings.Split(string(content), "\n") {
-		for _, key := range strings.Split(line, " ") {
-			res := mapf(key, key)
-			fmt.Printf("%v", res)
+	res := mapf(filepath, string(content))
+	for _, kv := range res {
+		hash := ihash(kv.Key)
+		filename := fmt.Sprintf("mr-map-%d-reduce-%d", task.Index, hash)
+		err := os.WriteFile(filename, []byte(kv.Value), 0777)
+		if err != nil {
+			log.Fatalf("WriteFile %s failed: %v", filename, err)
+			return
 		}
+		log.Printf("Mapped %s to %s", kv.Key, filename)
 	}
 }
 
@@ -87,7 +95,15 @@ func doMap(task Task, mapf func(string, string) []KeyValue) {
 
 func doReduce(task Task, reducef func(string, []string) string) {
 	//从 master 记录的中间文件路径（intermediate[mapIdx][reduceIdx]）读取所有 map 任务的对应分区数据。
+	filepath := task.Inputfile[0]
+	content, err := os.ReadFile(filepath)
+	if err != nil {
+		log.Fatalf("ReadFile %s failed: %v", filepath, err)
+	}
+	res := reducef(filepath, content)
 
+	out_file := fmt.Sprintf("mr-out-%d", task.Index)
+	os.WriteFile(out_file)
 	//解析数据为[]KeyValue，按 key 排序（确保相同 key 连续）。
 	//合并相同 key 的 value 列表，调用reducef(key, values)得到结果。
 	//将结果写入输出文件（例如mr-out-1表示 reduce1 的输出）。

@@ -61,23 +61,29 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 				Inputfile: []string{c.files[i]},
 				NMap:      c.nMap,
 				NReduce:   c.nReduce,
+				Output:    make([]string, 0),
 			}
 			c.mu.Unlock()
 			return nil
 		}
 	}
-	for i := range c.reduceTasks {
-		if *c.reduceTasks[i] == Idle {
-			*c.reduceTasks[i] = InProgress
-			c.reduceTaskStart[i] = time.Now()
-			reply.Task = Task{
-				Type:    ReduceTask,
-				Index:   i,
-				NMap:    c.nMap,
-				NReduce: c.nReduce,
+	for i := range c.mapTasks {
+		if *c.mapTasks[i] == Completed {
+			for j := range c.reduceTasks {
+				if *c.reduceTasks[j] == Idle {
+					*c.reduceTasks[j] = InProgress
+					c.reduceTaskStart[j] = time.Now()
+					reply.Task = Task{
+						Type:      ReduceTask,
+						Index:     j,
+						NMap:      c.nMap,
+						NReduce:   c.nReduce,
+						Inputfile: []string{c.intermediateFiles[i][j]},
+					}
+					c.mu.Unlock()
+					return nil
+				}
 			}
-			c.mu.Unlock()
-			return nil
 		}
 	}
 	reply.allDone = true
@@ -155,6 +161,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	// Your code here.
 	c.nMap = len(files)
 	c.nReduce = nReduce
+	c.files = files
 	c.mapTasks = make([]*TaskStatus, c.nMap)
 	c.reduceTasks = make([]*TaskStatus, c.nReduce)
 	c.intermediateFiles = make([][]string, c.nMap)
