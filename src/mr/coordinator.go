@@ -67,23 +67,22 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 			return nil
 		}
 	}
-	for i := range c.mapTasks {
-		if *c.mapTasks[i] == Completed {
-			for j := range c.reduceTasks {
-				if *c.reduceTasks[j] == Idle {
-					*c.reduceTasks[j] = InProgress
-					c.reduceTaskStart[j] = time.Now()
-					reply.Task = Task{
-						Type:      ReduceTask,
-						Index:     j,
-						NMap:      c.nMap,
-						NReduce:   c.nReduce,
-						Inputfile: []string{c.intermediateFiles[i][j]},
-					}
-					c.mu.Unlock()
-					return nil
-				}
+	for j := range c.reduceTasks {
+		if *c.reduceTasks[j] == Idle {
+			*c.reduceTasks[j] = InProgress
+			c.reduceTaskStart[j] = time.Now()
+			reply.Task = Task{
+				Type:      ReduceTask,
+				Index:     j,
+				NMap:      c.nMap,
+				NReduce:   c.nReduce,
+				Inputfile: make([]string, c.nMap),
 			}
+			for i := 0; i < c.nMap; i++ {
+				reply.Task.Inputfile = append(reply.Task.Inputfile, c.intermediateFiles[i][j])
+			}
+			c.mu.Unlock()
+			return nil
 		}
 	}
 	reply.allDone = true
@@ -95,9 +94,13 @@ func (c *Coordinator) TaskDone(args *TaskDoneArgs, reply *TaskDoneReply) error {
 	c.mu.Lock()
 	index := args.Task.Index
 	taskType := args.Task.Type
+	output := args.Task.Output
 	switch taskType {
 	case MapTask:
 		*c.mapTasks[index] = Completed
+		for i := 0; i < len(c.mapTasks); i++ {
+			c.intermediateFiles[index][i] = output[i]
+		}
 		c.mu.Unlock()
 		return nil
 	case ReduceTask:

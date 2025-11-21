@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"strings"
 )
 
 // Map functions return a slice of KeyValue.
@@ -39,17 +40,11 @@ func Worker(mapf func(string, string) []KeyValue,
 			fmt.Println("All tasks are done. Worker exiting.")
 			break
 		}
-		done_args := TaskDoneArgs{reply.Task}
-		done_reply := TaskDoneReply{}
 		switch reply.Task.Type {
 		case MapTask:
 			// Process map task
 			fmt.Printf("Worker received Map task %d\n", reply.Task.Index)
 			doMap(reply.Task, mapf)
-			res := call("Coordinator.TaskDone", &done_args, &done_reply)
-			if res == false {
-				log.Fatalf("Coordinator.TaskDone RPC call failed")
-			}
 		case ReduceTask:
 			// Process reduce task
 			fmt.Printf("Worker received Reduce task %d\n", reply.Task.Index)
@@ -75,16 +70,29 @@ func doMap(task Task, mapf func(string, string) []KeyValue) {
 	if err != nil {
 		log.Fatalf("ReadFile %s failed: %v", filepath, err)
 	}
+	contents := make([][]string, task.NReduce)
 	res := mapf(filepath, string(content))
 	for _, kv := range res {
 		hash := ihash(kv.Key)
-		filename := fmt.Sprintf("mr-map-%d-reduce-%d", task.Index, hash)
-		err := os.WriteFile(filename, []byte(kv.Value), 0777)
+		reduce_index := hash % task.NReduce
+		line := fmt.Sprintf("%v %v\n", kv.Key, kv.Value)
+		contents[reduce_index] = append(contents[reduce_index], line)
+	}
+	for i := 0; i < task.NReduce; i++ {
+		filename := fmt.Sprintf("mr-map-%d-reduce-%d", task.Index, i)
+		lines := contents[i]
+		file, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 		if err != nil {
-			log.Fatalf("WriteFile %s failed: %v", filename, err)
-			return
+			log.Fatalf("OpenFile %s failed: %v", filename, err)
 		}
-		log.Printf("Mapped %s to %s", kv.Key, filename)
+		defer file.Close()
+		for _, line := range lines {
+			_, err = fmt.Fprintf(file, line)
+			if err != nil {
+				log.Fatalf("WriteString to file %s failed: %v", filename, err)
+			}
+		}
+		task.Output = append(task.Output, filename)
 	}
 }
 
@@ -94,19 +102,16 @@ func doMap(task Task, mapf func(string, string) []KeyValue) {
 //生成中间文件路径（例如mr-map-0-1表示 map0 的 reduce1 分区），汇报给 master。
 
 func doReduce(task Task, reducef func(string, []string) string) {
-	//从 master 记录的中间文件路径（intermediate[mapIdx][reduceIdx]）读取所有 map 任务的对应分区数据。
-	filepath := task.Inputfile[0]
-	content, err := os.ReadFile(filepath)
-	if err != nil {
-		log.Fatalf("ReadFile %s failed: %v", filepath, err)
+	filepaths := task.Inputfile
+	for _, filepath := range filepaths {
+		content, err := os.ReadFile(filepath)
+		if err != nil {
+			log.Fatalf("ReadFile %s failed: %v", filepath, err)
+		}
+		for _, line := range strings.Split(string(content), "\n") {
+			println(line)
+		}
 	}
-	res := reducef(filepath, content)
-
-	out_file := fmt.Sprintf("mr-out-%d", task.Index)
-	os.WriteFile(out_file)
-	//解析数据为[]KeyValue，按 key 排序（确保相同 key 连续）。
-	//合并相同 key 的 value 列表，调用reducef(key, values)得到结果。
-	//将结果写入输出文件（例如mr-out-1表示 reduce1 的输出）。
 }
 
 // example function to show how to make an RPC call to the coordinator.
