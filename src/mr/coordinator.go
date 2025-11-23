@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -11,7 +12,7 @@ import (
 )
 
 const (
-	TIMEOUT = 5
+	TIMEOUT = 10 // 增加超时时间以应对崩溃测试
 )
 
 type Coordinator struct {
@@ -64,9 +65,18 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// 检查是否所有任务都已完成
+	if c.taskPhase == DonePhase {
+		reply.Task = Task{
+			Type: NoneTask,
+		}
+		return nil
+	}
+
 	// 优先分配 Reduce 任务（如果 Map 任务已完成）
 	switch c.taskPhase {
 	case ReducePhase:
+		// 查找空闲的 Reduce 任务
 		for j := range c.reduceTasks {
 			if *c.reduceTasks[j] == Idle {
 				*c.reduceTasks[j] = InProgress
@@ -78,11 +88,21 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 					NReduce:   c.nReduce,
 					Inputfile: make([]string, 0),
 				}
+				// 收集中间文件 - 使用预定义的文件名格式
+				for i := 0; i < c.nMap; i++ {
+					filename := fmt.Sprintf("mr-%d-%d", i, j)
+					reply.Task.Inputfile = append(reply.Task.Inputfile, filename)
+				}
 				return nil
 			}
 		}
+
+		// 查找超时的 Reduce 任务并重新分配
 		for j := range c.reduceTasks {
 			if *c.reduceTasks[j] == InProgress && time.Since(c.reduceTaskStart[j]).Seconds() > TIMEOUT {
+				// 重置为 Idle，让其他 worker 可以获取
+				*c.reduceTasks[j] = Idle
+				*c.reduceTasks[j] = InProgress
 				c.reduceTaskStart[j] = time.Now()
 				reply.Task = Task{
 					Type:      ReduceTask,
@@ -91,23 +111,33 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 					NReduce:   c.nReduce,
 					Inputfile: make([]string, 0),
 				}
+				// 收集中间文件 - 使用预定义的文件名格式
+				for i := 0; i < c.nMap; i++ {
+					filename := fmt.Sprintf("mr-%d-%d", i, j)
+					reply.Task.Inputfile = append(reply.Task.Inputfile, filename)
+				}
+				return nil
 			}
 		}
 
-		allRecudeDone := true
+		// 检查是否所有 Reduce 任务都已完成
+		allReduceDone := true
 		for i := range c.reduceTasks {
 			if *c.reduceTasks[i] != Completed {
-				allRecudeDone = false
+				allReduceDone = false
 				break
 			}
 		}
-		if allRecudeDone {
+		if allReduceDone {
 			c.taskPhase = DonePhase
 		}
+
+		// 没有可用任务，返回 NoneTask
 		reply.Task = Task{
 			Type: NoneTask,
 		}
 		return nil
+
 	case MapPhase:
 		// 分配 Map 任务
 		for i := range c.mapTasks {
@@ -124,9 +154,13 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 				return nil
 			}
 		}
-		// 重试超时任务
+
+		// 重试超时的 Map 任务
 		for i := range c.mapTasks {
 			if *c.mapTasks[i] == InProgress && time.Since(c.mapTaskStart[i]).Seconds() > TIMEOUT {
+				// 重置为 Idle，让其他 worker 可以获取
+				*c.mapTasks[i] = Idle
+				*c.mapTasks[i] = InProgress
 				c.mapTaskStart[i] = time.Now()
 				reply.Task = Task{
 					Type:      MapTask,
@@ -138,6 +172,8 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 				return nil
 			}
 		}
+
+		// 检查是否所有 Map 任务都已完成
 		allMapDone := true
 		for i := range c.mapTasks {
 			if *c.mapTasks[i] != Completed {
@@ -149,23 +185,22 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 			c.taskPhase = ReducePhase
 		}
 
+		// 没有可用任务，返回 NoneTask
 		reply.Task = Task{
 			Type: NoneTask,
 		}
 		return nil
+
 	case DonePhase:
 		reply.Task = Task{
 			Type: NoneTask,
 		}
+		return nil
+
 	default:
 		panic("unhandled default case")
 	}
 
-	// 如果没有空闲任务，返回 allDone 状态
-	//reply.allDone = c.Done()
-	//if !reply.allDone {
-	//	reply.Task = Task{} // 返回空任务，让 worker 稍后重试
-	//}
 	return nil
 }
 

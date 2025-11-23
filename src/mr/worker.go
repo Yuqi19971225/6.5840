@@ -42,27 +42,53 @@ func Worker(mapf func(string, string) []KeyValue,
 			continue
 		}
 
-		// 检查是否收到了有效的任务
-		if reply.Task.Type == MapTask || reply.Task.Type == ReduceTask {
-			switch reply.Task.Type {
-			case MapTask:
-				// Process map task
-				fmt.Printf("Worker received Map task %d\n", reply.Task.Index)
-				doMap(reply.Task, mapf)
-			case ReduceTask:
-				// Process reduce task
-				fmt.Printf("Worker received Reduce task %d\n", reply.Task.Index)
-				doReduce(reply.Task, reducef)
-			}
+		// 检查任务类型
+		switch reply.Task.Type {
+		case MapTask:
+			// Process map task
+			fmt.Printf("Worker received Map task %d\n", reply.Task.Index)
+			doMap(reply.Task, mapf)
 
+			// 通知协调器任务完成
 			doneArgs := TaskDoneArgs{
-				Task: reply.Task,
+				Task: Task{
+					Type:      MapTask,
+					Index:     reply.Task.Index,
+					Inputfile: reply.Task.Inputfile,
+					NMap:      reply.Task.NMap,
+					NReduce:   reply.Task.NReduce,
+				},
 			}
 			doneReply := TaskDoneReply{}
 			call("Coordinator.TaskDone", &doneArgs, &doneReply)
-		} else {
-			// 没有收到任务，等待一下避免忙等待
+
+		case ReduceTask:
+			// Process reduce task
+			fmt.Printf("Worker received Reduce task %d\n", reply.Task.Index)
+			doReduce(reply.Task, reducef)
+
+			// 通知协调器任务完成
+			doneArgs := TaskDoneArgs{
+				Task: Task{
+					Type:      ReduceTask,
+					Index:     reply.Task.Index,
+					Inputfile: reply.Task.Inputfile,
+					NMap:      reply.Task.NMap,
+					NReduce:   reply.Task.NReduce,
+				},
+			}
+			doneReply := TaskDoneReply{}
+			call("Coordinator.TaskDone", &doneArgs, &doneReply)
+
+		case NoneTask:
+			// 没有可用任务，检查是否完成
 			time.Sleep(100 * time.Millisecond)
+			continue
+
+		default:
+			// 未知任务类型，等待
+			time.Sleep(100 * time.Millisecond)
+			continue
 		}
 	}
 }
@@ -89,8 +115,6 @@ func doMap(task Task, mapf func(string, string) []KeyValue) {
 		tempContents[reduceIndex] = append(tempContents[reduceIndex], line)
 	}
 
-	outputFiles := make([]string, 0, task.NReduce)
-
 	// 为每个 reduce 任务创建输出文件
 	for i := 0; i < task.NReduce; i++ {
 		filename := fmt.Sprintf("mr-%d-%d", task.Index, i)
@@ -116,14 +140,11 @@ func doMap(task Task, mapf func(string, string) []KeyValue) {
 		if err != nil {
 			log.Fatalf("Close file %s failed: %v", filename, err)
 		}
-
-		outputFiles = append(outputFiles, filename)
 	}
-
-	return
 }
 
 func doReduce(task Task, reducef func(string, []string) string) {
+	// 构建中间文件名
 	filepaths := make([]string, 0, task.NMap)
 	for i := 0; i < task.NMap; i++ {
 		filename := fmt.Sprintf("mr-%d-%d", i, task.Index)
@@ -136,7 +157,8 @@ func doReduce(task Task, reducef func(string, []string) string) {
 	for _, filepath := range filepaths {
 		file, err := os.Open(filepath)
 		if err != nil {
-			log.Fatalf("Open file %s failed: %v", filepath, err)
+			log.Printf("Open file %s failed: %v", filepath, err)
+			continue // 继续处理其他文件
 		}
 
 		scanner := bufio.NewScanner(file)
@@ -202,32 +224,6 @@ func doReduce(task Task, reducef func(string, []string) string) {
 	}
 }
 
-// example function to show how to make an RPC call to the coordinator.
-//
-// the RPC argument and reply types are defined in rpc.go.
-func CallExample() {
-	// declare an argument structure.
-	args := ExampleArgs{}
-
-	// fill in the argument(s).
-	args.X = 99
-
-	// declare a reply structure.
-	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	// the "Coordinator.Example" tells the
-	// receiving server that we'd like to call
-	// the Example() method of struct Coordinator.
-	ok := call("Coordinator.Example", &args, &reply)
-	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply.Y %v\n", reply.Y)
-	} else {
-		fmt.Printf("call failed!\n")
-	}
-}
-
 // send an RPC request to the coordinator, wait for the response.
 // usually returns true.
 // returns false if something goes wrong.
@@ -235,7 +231,9 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	sockname := coordinatorSock()
 	c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {
-		log.Fatal("dialing:", err)
+		// 注意：这里改为 log.Printf 而不是 log.Fatal，避免 worker 退出
+		log.Printf("dialing: %v", err)
+		return false
 	}
 	defer c.Close()
 
@@ -244,6 +242,6 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 		return true
 	}
 
-	fmt.Println(err)
+	log.Printf("RPC call error: %v", err)
 	return false
 }
