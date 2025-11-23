@@ -6,7 +6,6 @@ import (
 	"log"
 	"net/rpc"
 	"os"
-	"strings"
 )
 
 // Map functions return a slice of KeyValue.
@@ -105,13 +104,14 @@ func doMap(task Task, mapf func(string, string) []KeyValue) []string {
 func doReduce(task Task, reducef func(string, []string) string) {
 	filepaths := task.Inputfile
 	for _, filepath := range filepaths {
-		content, err := os.ReadFile(filepath)
-		if err != nil {
-			log.Fatalf("ReadFile %s failed: %v", filepath, err)
-		}
-		for _, line := range strings.Split(string(content), "\n") {
-			println(line)
-		}
+		log.Println("%v", filepath)
+		//content, err := os.ReadFile(filepath)
+		//if err != nil {
+		//	log.Fatalf("ReadFile %s failed: %v", filepath, err)
+		//}
+		//for _, line := range strings.Split(string(content), "\n") {
+		//	println(line)
+		//}
 	}
 }
 
