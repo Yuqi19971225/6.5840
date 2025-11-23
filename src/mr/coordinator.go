@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	TIMEOUT = 120
+	TIMEOUT = 600
 )
 
 type Coordinator struct {
@@ -32,6 +32,7 @@ type TaskType int
 const (
 	MapTask TaskType = iota
 	ReduceTask
+	NoneTask
 )
 
 type TaskStatus int
@@ -103,8 +104,6 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 		}
 		if allRecudeDone {
 			c.taskPhase = DonePhase
-			reply.allDone = true
-			return nil
 		}
 		return nil
 	case MapPhase:
@@ -146,8 +145,10 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 		}
 		if allMapDone {
 			c.taskPhase = ReducePhase
-			reply.allDone = true
-			return nil
+		}
+
+		reply.Task = Task{
+			Type: NoneTask,
 		}
 		return nil
 	default:

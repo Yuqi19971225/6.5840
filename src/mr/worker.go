@@ -42,11 +42,6 @@ func Worker(mapf func(string, string) []KeyValue,
 			continue
 		}
 
-		if reply.allDone {
-			fmt.Println("All tasks are done. Worker exiting.")
-			break
-		}
-
 		// 检查是否收到了有效的任务
 		if reply.Task.Type == MapTask || reply.Task.Type == ReduceTask {
 			switch reply.Task.Type {

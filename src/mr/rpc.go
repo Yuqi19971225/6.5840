@@ -30,8 +30,7 @@ type GetTaskArgs struct {
 }
 
 type GetTaskReply struct {
-	Task    Task
-	allDone bool
+	Task Task
 }
 
 type TaskDoneArgs struct {
