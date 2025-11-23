@@ -59,7 +59,6 @@ func Worker(mapf func(string, string) []KeyValue,
 				Task: reply.Task,
 			}
 			doneReply := TaskDoneReply{}
-			log.Printf("Worker sending TaskDoneReply %d\n", reply.Task.Index)
 			call("Coordinator.TaskDone", &doneArgs, &doneReply)
 		} else {
 			// 没有收到任务，等待一下避免忙等待
@@ -69,6 +68,9 @@ func Worker(mapf func(string, string) []KeyValue,
 }
 
 func doMap(task Task, mapf func(string, string) []KeyValue) {
+	if len(task.Inputfile) == 0 {
+		return
+	}
 	filepath := task.Inputfile[0]
 	content, err := os.ReadFile(filepath)
 	if err != nil {

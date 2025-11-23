@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	TIMEOUT = 600
+	TIMEOUT = 5
 )
 
 type Coordinator struct {
@@ -63,7 +63,6 @@ type Task struct {
 func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	log.Println("GetTask", c.taskPhase)
 
 	// 优先分配 Reduce 任务（如果 Map 任务已完成）
 	switch c.taskPhase {
@@ -104,6 +103,9 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 		}
 		if allRecudeDone {
 			c.taskPhase = DonePhase
+		}
+		reply.Task = Task{
+			Type: NoneTask,
 		}
 		return nil
 	case MapPhase:
@@ -151,6 +153,10 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 			Type: NoneTask,
 		}
 		return nil
+	case DonePhase:
+		reply.Task = Task{
+			Type: NoneTask,
+		}
 	default:
 		panic("unhandled default case")
 	}
@@ -183,7 +189,6 @@ func (c *Coordinator) TaskDone(args *TaskDoneArgs, reply *TaskDoneReply) error {
 		}
 		*c.reduceTasks[index] = Completed
 	}
-	log.Println("Coordinator.TaskDone check all done", args.Task.Type, args.Task.Index)
 	return nil
 }
 
