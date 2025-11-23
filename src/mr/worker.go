@@ -53,7 +53,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			case MapTask:
 				// Process map task
 				fmt.Printf("Worker received Map task %d\n", reply.Task.Index)
-				reply.Task.Output = doMap(reply.Task, mapf)
+				doMap(reply.Task, mapf)
 			case ReduceTask:
 				// Process reduce task
 				fmt.Printf("Worker received Reduce task %d\n", reply.Task.Index)
@@ -64,6 +64,7 @@ func Worker(mapf func(string, string) []KeyValue,
 				Task: reply.Task,
 			}
 			doneReply := TaskDoneReply{}
+			log.Printf("Worker sending TaskDoneReply %d\n", reply.Task.Index)
 			call("Coordinator.TaskDone", &doneArgs, &doneReply)
 		} else {
 			// 没有收到任务，等待一下避免忙等待
@@ -72,7 +73,7 @@ func Worker(mapf func(string, string) []KeyValue,
 	}
 }
 
-func doMap(task Task, mapf func(string, string) []KeyValue) []string {
+func doMap(task Task, mapf func(string, string) []KeyValue) {
 	filepath := task.Inputfile[0]
 	content, err := os.ReadFile(filepath)
 	if err != nil {
@@ -122,11 +123,16 @@ func doMap(task Task, mapf func(string, string) []KeyValue) []string {
 		outputFiles = append(outputFiles, filename)
 	}
 
-	return outputFiles
+	return
 }
 
 func doReduce(task Task, reducef func(string, []string) string) {
-	filepaths := task.Inputfile
+	filepaths := make([]string, 0, task.NMap)
+	for i := 0; i < task.NMap; i++ {
+		filename := fmt.Sprintf("mr-%d-%d", i, task.Index)
+		filepaths = append(filepaths, filename)
+	}
+
 	var kvs []KeyValue
 
 	// 读取所有输入文件
