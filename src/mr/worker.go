@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Map functions return a slice of KeyValue.
@@ -35,34 +36,39 @@ func Worker(mapf func(string, string) []KeyValue,
 		reply := GetTaskReply{}
 		res := call("Coordinator.GetTask", &args, &reply)
 		if res == false {
-			log.Fatalf("GetTask RPC call failed")
-			break
+			// 不要终止 worker，可能只是协调器暂时不可用
+			log.Printf("GetTask RPC call failed, waiting and retrying...")
+			time.Sleep(1 * time.Second) // 等待一秒后重试
+			continue
 		}
+
 		if reply.allDone {
 			fmt.Println("All tasks are done. Worker exiting.")
 			break
 		}
-		switch reply.Task.Type {
-		case MapTask:
-			// Process map task
-			fmt.Printf("Worker received Map task %d\n", reply.Task.Index)
-			reply.Task.Output = doMap(reply.Task, mapf)
-		case ReduceTask:
-			// Process reduce task
-			fmt.Printf("Worker received Reduce task %d\n", reply.Task.Index)
-			doReduce(reply.Task, reducef)
-		default:
-			// Unknown task type
-			log.Fatalf("Unknown task type received: %v", reply.Task.Type)
-		}
 
-		doneAargs := TaskDoneArgs{
-			Task: reply.Task,
+		// 检查是否收到了有效的任务
+		if reply.Task.Type == MapTask || reply.Task.Type == ReduceTask {
+			switch reply.Task.Type {
+			case MapTask:
+				// Process map task
+				fmt.Printf("Worker received Map task %d\n", reply.Task.Index)
+				reply.Task.Output = doMap(reply.Task, mapf)
+			case ReduceTask:
+				// Process reduce task
+				fmt.Printf("Worker received Reduce task %d\n", reply.Task.Index)
+				doReduce(reply.Task, reducef)
+			}
+
+			doneArgs := TaskDoneArgs{
+				Task: reply.Task,
+			}
+			doneReply := TaskDoneReply{}
+			call("Coordinator.TaskDone", &doneArgs, &doneReply)
+		} else {
+			// 没有收到任务，等待一下避免忙等待
+			time.Sleep(100 * time.Millisecond)
 		}
-		doneReply := TaskDoneReply{}
-		call("Coordinator.TaskDone", &doneAargs, &doneReply)
-		// uncomment to send the Example RPC to the coordinator.
-		// CallExample()
 	}
 }
 
@@ -72,76 +78,123 @@ func doMap(task Task, mapf func(string, string) []KeyValue) []string {
 	if err != nil {
 		log.Fatalf("ReadFile %s failed: %v", filepath, err)
 	}
-	contents := make([][]string, task.NReduce)
+
+	// 创建临时存储，每个 reduce 任务一个字符串切片
+	tempContents := make([][]string, task.NReduce)
 	res := mapf(filepath, string(content))
+
+	// 按 hash 值分组
 	for _, kv := range res {
 		hash := ihash(kv.Key)
-		reduce_index := hash % task.NReduce
-		line := fmt.Sprintf("%v %v\n", kv.Key, kv.Value)
-		contents[reduce_index] = append(contents[reduce_index], line)
+		reduceIndex := hash % task.NReduce
+		line := fmt.Sprintf("%v %v", kv.Key, kv.Value)
+		tempContents[reduceIndex] = append(tempContents[reduceIndex], line)
 	}
+
+	outputFiles := make([]string, 0, task.NReduce)
+
+	// 为每个 reduce 任务创建输出文件
 	for i := 0; i < task.NReduce; i++ {
-		filename := fmt.Sprintf("mr-map-%d-reduce-%d", task.Index, i)
-		lines := contents[i]
-		file, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+		filename := fmt.Sprintf("mr-%d-%d", task.Index, i)
+		file, err := os.Create(filename)
 		if err != nil {
-			log.Fatalf("OpenFile %s failed: %v", filename, err)
+			log.Fatalf("Create file %s failed: %v", filename, err)
 		}
-		defer file.Close()
-		for _, line := range lines {
-			_, err = fmt.Fprintf(file, line)
+
+		writer := bufio.NewWriter(file)
+		for _, line := range tempContents[i] {
+			_, err = writer.WriteString(line + "\n")
 			if err != nil {
-				log.Fatalf("WriteString to file %s failed: %v", filename, err)
+				log.Fatalf("Write to file %s failed: %v", filename, err)
 			}
 		}
-		task.Output = append(task.Output, filename)
+
+		err = writer.Flush()
+		if err != nil {
+			log.Fatalf("Flush file %s failed: %v", filename, err)
+		}
+
+		err = file.Close()
+		if err != nil {
+			log.Fatalf("Close file %s failed: %v", filename, err)
+		}
+
+		outputFiles = append(outputFiles, filename)
 	}
-	return task.Output
+
+	return outputFiles
 }
 
 func doReduce(task Task, reducef func(string, []string) string) {
 	filepaths := task.Inputfile
 	var kvs []KeyValue
+
+	// 读取所有输入文件
 	for _, filepath := range filepaths {
-		content, err := os.ReadFile(filepath)
+		file, err := os.Open(filepath)
 		if err != nil {
-			log.Fatalf("ReadFile %s failed: %v", filepath, err)
+			log.Fatalf("Open file %s failed: %v", filepath, err)
 		}
-		lines := strings.Split(string(content), "\n")
-		for _, line := range lines {
+
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			line := scanner.Text()
 			if line == "" {
 				continue
 			}
-			parts := strings.Split(line, " ")
-			kvs = append(kvs, KeyValue{parts[0], parts[1]})
+
+			parts := strings.SplitN(line, " ", 2)
+			if len(parts) == 2 {
+				kvs = append(kvs, KeyValue{parts[0], parts[1]})
+			}
+		}
+
+		err = file.Close()
+		if err != nil {
+			log.Fatalf("Close file %s failed: %v", filepath, err)
 		}
 	}
 
+	// 按键排序
 	sort.Slice(kvs, func(i, j int) bool {
 		return kvs[i].Key < kvs[j].Key
 	})
 
+	// 创建输出文件
 	outputFile := fmt.Sprintf("mr-out-%d", task.Index)
 	file, err := os.Create(outputFile)
 	if err != nil {
-		log.Fatalf("CreateFile %s failed: %v", outputFile, err)
+		log.Fatalf("Create output file %s failed: %v", outputFile, err)
 	}
-	writer := bufio.NewWriter(file)
-	defer writer.Flush()
 	defer file.Close()
 
+	writer := bufio.NewWriter(file)
+	defer writer.Flush()
+
+	// 执行 reduce 操作
 	i := 0
 	for i < len(kvs) {
-		j := i
-		for j < len(kvs) && kvs[j].Key == kvs[j].Key {
+		j := i + 1
+		// 找到所有相同键的项
+		for j < len(kvs) && kvs[j].Key == kvs[i].Key {
 			j++
 		}
+
+		// 收集相同键的值
 		values := make([]string, 0, j-i)
 		for k := i; k < j; k++ {
 			values = append(values, kvs[k].Value)
 		}
-		res := reducef(kvs[i].Key, values)
-		fmt.Fprintf(writer, "%v %v\n", kvs[i].Key, res)
+
+		// 执行 reduce 函数
+		result := reducef(kvs[i].Key, values)
+
+		// 写入结果
+		_, err := fmt.Fprintf(writer, "%v %v\n", kvs[i].Key, result)
+		if err != nil {
+			log.Fatalf("Write result to file failed: %v", err)
+		}
+
 		i = j
 	}
 }
@@ -150,7 +203,6 @@ func doReduce(task Task, reducef func(string, []string) string) {
 //
 // the RPC argument and reply types are defined in rpc.go.
 func CallExample() {
-
 	// declare an argument structure.
 	args := ExampleArgs{}
 
@@ -177,7 +229,6 @@ func CallExample() {
 // usually returns true.
 // returns false if something goes wrong.
 func call(rpcname string, args interface{}, reply interface{}) bool {
-	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
 	sockname := coordinatorSock()
 	c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {

@@ -51,10 +51,11 @@ type Task struct {
 // Your code here -- RPC handlers for the worker to call.
 func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 	c.mu.Lock()
-	defer c.mu.Unlock() // 使用 defer 确保解锁
+	defer c.mu.Unlock()
 
+	// 检查是否所有任务都已完成
 	if c.allDone {
-		reply.Task = Task{} // 返回空任务
+		reply.Task = Task{}
 		reply.allDone = true
 		return nil
 	}
@@ -68,7 +69,7 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 		}
 	}
 
-	// 如果所有 Map 任务已完成，只分配 Reduce 任务
+	// 优先分配 Reduce 任务（如果 Map 任务已完成）
 	if allMapDone {
 		for j := range c.reduceTasks {
 			if *c.reduceTasks[j] == Idle {
@@ -83,16 +84,13 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 				}
 				// 收集该 Reduce 任务需要的中间文件
 				for i := 0; i < c.nMap; i++ {
-					// 检查中间文件是否已存在，避免越界
-					if j < len(c.intermediateFiles[i]) {
-						reply.Task.Inputfile = append(reply.Task.Inputfile, c.intermediateFiles[i][j])
-					}
+					reply.Task.Inputfile = append(reply.Task.Inputfile, c.intermediateFiles[i][j])
 				}
 				return nil
 			}
 		}
 	} else {
-		// 否则分配 Map 任务
+		// 分配 Map 任务
 		for i := range c.mapTasks {
 			if *c.mapTasks[i] == Idle {
 				*c.mapTasks[i] = InProgress
@@ -110,15 +108,11 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 		}
 	}
 
-	// 检查是否所有任务都已完成
-	if c.Done() {
-		reply.allDone = true
-		return nil
+	// 如果没有空闲任务，返回 allDone 状态
+	reply.allDone = c.Done()
+	if !reply.allDone {
+		reply.Task = Task{} // 返回空任务，让 worker 稍后重试
 	}
-
-	// 如果没有空闲任务但还没完成，返回空任务，让 worker 稍后重试
-	reply.Task = Task{}
-	reply.allDone = false
 	return nil
 }
 
@@ -132,7 +126,6 @@ func (c *Coordinator) TaskDone(args *TaskDoneArgs, reply *TaskDoneReply) error {
 
 	switch taskType {
 	case MapTask:
-		// 检查索引是否有效
 		if index < 0 || index >= len(c.mapTasks) {
 			log.Printf("Invalid map task index: %d", index)
 			return nil
@@ -140,18 +133,14 @@ func (c *Coordinator) TaskDone(args *TaskDoneArgs, reply *TaskDoneReply) error {
 
 		*c.mapTasks[index] = Completed
 
-		// 检查输出长度是否正确
-		if len(output) != c.nReduce {
-			log.Printf("Map task output length mismatch: expected %d, got %d", c.nReduce, len(output))
-		} else {
-			// 存储中间文件
-			for i := 0; i < c.nReduce && i < len(output); i++ {
+		// 存储中间文件
+		if len(output) == c.nReduce {
+			for i := 0; i < c.nReduce; i++ {
 				c.intermediateFiles[index][i] = output[i]
 			}
 		}
 
 	case ReduceTask:
-		// 检查索引是否有效
 		if index < 0 || index >= len(c.reduceTasks) {
 			log.Printf("Invalid reduce task index: %d", index)
 			return nil
@@ -178,14 +167,25 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 func (c *Coordinator) server() {
 	rpc.Register(c)
 	rpc.HandleHTTP()
-	//l, e := net.Listen("tcp", ":1234")
 	sockname := coordinatorSock()
+
+	// 确保旧的 socket 文件被删除
 	os.Remove(sockname)
+
 	l, e := net.Listen("unix", sockname)
 	if e != nil {
 		log.Fatal("listen error:", e)
 	}
-	go http.Serve(l, nil)
+
+	log.Printf("Coordinator server starting on %s", sockname)
+
+	// 启动 HTTP 服务器
+	go func() {
+		err := http.Serve(l, nil)
+		if err != nil {
+			log.Printf("HTTP server error: %v", err)
+		}
+	}()
 }
 
 // main/mrcoordinator.go calls Done() periodically to find out
@@ -194,22 +194,21 @@ func (c *Coordinator) Done() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	ret := false
-
-	// Your code here.
 	for i := range c.mapTasks {
 		if *c.mapTasks[i] != Completed {
-			return ret
+			return false
 		}
 	}
 	for i := range c.reduceTasks {
 		if *c.reduceTasks[i] != Completed {
-			return ret
+			return false
 		}
 	}
+
+	// 设置 allDone 标志
 	c.allDone = true
-	ret = c.allDone
-	return ret
+	log.Println("All tasks completed")
+	return true
 }
 
 // create a Coordinator.
@@ -217,7 +216,6 @@ func (c *Coordinator) Done() bool {
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
-	// Your code here.
 	c.nMap = len(files)
 	c.nReduce = nReduce
 	c.files = files
@@ -230,7 +228,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	for i := range c.mapTasks {
 		c.mapTasks[i] = new(TaskStatus)
 		*c.mapTasks[i] = Idle
-		c.intermediateFiles[i] = make([]string, c.nReduce) // 正确初始化中间文件数组
+		c.intermediateFiles[i] = make([]string, c.nReduce)
 	}
 
 	for i := range c.reduceTasks {
