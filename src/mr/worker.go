@@ -1,11 +1,14 @@
 package mr
 
 import (
+	"bufio"
 	"fmt"
 	"hash/fnv"
 	"log"
 	"net/rpc"
 	"os"
+	"sort"
+	"strings"
 )
 
 // Map functions return a slice of KeyValue.
@@ -96,22 +99,50 @@ func doMap(task Task, mapf func(string, string) []KeyValue) []string {
 	return task.Output
 }
 
-//读取输入文件内容（reply.Task.InputFiles[0]）。
-//调用mapf(filename, content)得到[]KeyValue（中间结果）。
-//对每个KeyValue，按hash(key) % NReduce确定归属的 reduce 分区，写入对应临时文件。
-//生成中间文件路径（例如mr-map-0-1表示 map0 的 reduce1 分区），汇报给 master。
-
 func doReduce(task Task, reducef func(string, []string) string) {
 	filepaths := task.Inputfile
+	var kvs []KeyValue
 	for _, filepath := range filepaths {
-		log.Println("%v", filepath)
-		//content, err := os.ReadFile(filepath)
-		//if err != nil {
-		//	log.Fatalf("ReadFile %s failed: %v", filepath, err)
-		//}
-		//for _, line := range strings.Split(string(content), "\n") {
-		//	println(line)
-		//}
+		content, err := os.ReadFile(filepath)
+		if err != nil {
+			log.Fatalf("ReadFile %s failed: %v", filepath, err)
+		}
+		lines := strings.Split(string(content), "\n")
+		for _, line := range lines {
+			if line == "" {
+				continue
+			}
+			parts := strings.Split(line, " ")
+			kvs = append(kvs, KeyValue{parts[0], parts[1]})
+		}
+	}
+
+	sort.Slice(kvs, func(i, j int) bool {
+		return kvs[i].Key < kvs[j].Key
+	})
+
+	outputFile := fmt.Sprintf("mr-out-%d", task.Index)
+	file, err := os.Create(outputFile)
+	if err != nil {
+		log.Fatalf("CreateFile %s failed: %v", outputFile, err)
+	}
+	writer := bufio.NewWriter(file)
+	defer writer.Flush()
+	defer file.Close()
+
+	i := 0
+	for i < len(kvs) {
+		j := i
+		for j < len(kvs) && kvs[j].Key == kvs[j].Key {
+			j++
+		}
+		values := make([]string, 0, j-i)
+		for k := i; k < j; k++ {
+			values = append(values, kvs[k].Value)
+		}
+		res := reducef(kvs[i].Key, values)
+		fmt.Fprintf(writer, "%v %v\n", kvs[i].Key, res)
+		i = j
 	}
 }
 
