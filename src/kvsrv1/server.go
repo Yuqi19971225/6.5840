@@ -68,6 +68,7 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 		if args.Version == val.version {
 			val.value = args.Value
 			val.version++
+			kv.dict[key] = val
 			reply.Err = rpc.OK
 		} else {
 			reply.Err = rpc.ErrVersion
