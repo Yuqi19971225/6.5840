@@ -1,0 +1,6 @@
+1、实现的核心在于coordinator
+coordinator需要维护整体任务的状态TaskPhase，以及单个任务的状态mapTasks，reduceTasks，mapTaskStart，reduceTaskStart
+当全部map任务完成后TaskPhase进入下一reduce阶段
+针对单个任务，对于超时的任务，会将任务重新下发
+2、rpc通信只需要传递任务类型、任务编号和输入文件位置，以及两种类型的任务数量
+3、worker只需要根据自己分到的任务类型不同，进行不同的处理逻辑即可，并在完成后通知coordinator
