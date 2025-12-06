@@ -7,6 +7,7 @@ package raft
 // Make() creates a new raft peer that implements the raft interface.
 
 import (
+	"log"
 	//	"bytes"
 	"math/rand"
 	"sync"
@@ -78,7 +79,7 @@ func (rf *Raft) GetState() (int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	term = rf.currentTerm
-	isleader = rf.votedFor == rf.me
+	isleader = rf.state == Leader
 	return term, isleader
 }
 
@@ -139,14 +140,18 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 func (rf *Raft) requestAppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	reply.Term = rf.currentTerm
+
 	if args.Term < rf.currentTerm {
-		reply.Success = false
-		reply.Term = rf.currentTerm
 		return
 	}
-	reply.Term = args.Term
-	reply.Success = true
-	return
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.state = Follower
+		rf.votedFor = -1
+		rf.persist()
+	}
+	rf.resetElectionTimer()
 }
 
 func (rf *Raft) sendRequestAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -266,6 +271,7 @@ func (rf *Raft) ticker() {
 
 		// Your code here (3A)
 		// Check if a leader election should be started.
+		log.Println(rf.me, rf.state)
 		switch rf.state {
 		case Follower:
 			rf.doFollower()
@@ -284,55 +290,117 @@ func (rf *Raft) ticker() {
 func (rf *Raft) doLeader() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	args := AppendEntriesArgs{
-		Term:     rf.currentTerm,
-		LeaderId: rf.me,
-	}
-	reply := AppendEntriesReply{}
-	for peer := range rf.peers {
-		ok := rf.sendRequestAppendEntries(peer, &args, &reply)
-		if ok {
+	for i := 0; i < len(rf.peers); i++ {
+		if i == rf.me {
 			continue
 		}
+		go func(peer int) {
+			rf.mu.Lock()
+			if rf.state != Leader {
+				return
+			}
+			args := AppendEntriesArgs{
+				Term:     rf.currentTerm,
+				LeaderId: rf.me,
+			}
+			var reply AppendEntriesReply
+			rf.mu.Unlock()
+			ok := rf.sendRequestAppendEntries(peer, &args, &reply)
+
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
+
+			if !ok || rf.state != Leader {
+				return
+			}
+
+			if reply.Term > rf.currentTerm {
+				rf.currentTerm = reply.Term
+				rf.state = Follower
+				rf.votedFor = -1
+				rf.persist()
+				return
+			}
+		}(i)
 	}
 }
 
 func (rf *Raft) doFollower() {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	rf.state = Candidate
+	select {
+	case <-rf.electionTimeout.C:
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
+		if rf.votedFor == -1 {
+			rf.state = Candidate
+		}
+	case <-time.After(10 * time.Millisecond):
+		log.Println("follower check timeout")
+	}
 }
 
 func (rf *Raft) doCandidate() {
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	rf.currentTerm = rf.currentTerm + 1
+	rf.currentTerm++
+	currentTerm := rf.currentTerm
 	rf.votedFor = rf.me
+	rf.resetElectionTimer()
+	rf.mu.Unlock()
+
 	arg := RequestVoteArgs{
 		Term:        rf.currentTerm,
 		CandidateId: rf.me,
 	}
-	reply := RequestVoteReply{}
-	vote := 0
-	for peer := range rf.peers {
-		ok := rf.sendRequestVote(peer, &arg, &reply)
-		if !ok {
+
+	var votesMu sync.Mutex
+	var wg sync.WaitGroup
+
+	vote := 1
+	for i := 0; i < len(rf.peers); i++ {
+		if i == rf.me {
 			continue
 		}
-		if reply.VoteGranted {
-			vote++
-		}
+		wg.Add(1)
+		go func(peer int) {
+			defer wg.Done()
+			var reply RequestVoteReply
+			ok := rf.sendRequestVote(peer, &arg, &reply)
+			if ok {
+				rf.mu.Lock()
+				defer rf.mu.Unlock()
+				if reply.Term > currentTerm {
+					rf.currentTerm = reply.Term
+					rf.state = Follower
+					rf.votedFor = -1
+					rf.persist()
+					return
+				}
+				if reply.VoteGranted {
+					votesMu.Lock()
+					vote++
+					votesMu.Unlock()
+					if vote > len(rf.peers)/2 {
+						rf.state = Leader
+						// TODO init leader
+					}
+				}
+			}
+		}(i)
 	}
-	if vote > len(rf.peers)/2 {
-		rf.votedFor = rf.me
-		rf.status = Leader
+	wg.Wait()
+
+	rf.mu.Lock()
+	if rf.state == Candidate && currentTerm == rf.currentTerm {
+		rf.resetElectionTimer()
 	}
+	rf.mu.Unlock()
 }
 
 func (rf *Raft) resetElectionTimer() {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
+	if rf.electionTimeout != nil {
+		rf.electionTimeout.Stop()
+	}
+	timeout := time.Duration(150+rand.Intn(150)) * time.Millisecond
+	rf.electionTimeout = time.NewTimer(timeout)
 }
 
 // the service or tester wants to create a Raft server. the ports
@@ -353,11 +421,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Your initialization code here (3A, 3B, 3C).
 	rf.currentTerm = 0
-	rf.status = Follower
+	rf.state = Follower
 	rf.votedFor = -1
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-
+	rf.resetElectionTimer()
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
