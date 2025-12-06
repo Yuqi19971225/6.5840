@@ -137,7 +137,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-func (rf *Raft) requestAppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+func (rf *Raft) RequestAppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	reply.Term = rf.currentTerm
@@ -155,7 +155,7 @@ func (rf *Raft) requestAppendEntries(args *AppendEntriesArgs, reply *AppendEntri
 }
 
 func (rf *Raft) sendRequestAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	ok := rf.peers[server].Call("Raft.requestAppendEntries", args, reply)
+	ok := rf.peers[server].Call("Raft.RequestAppendEntries", args, reply)
 	return ok
 }
 
@@ -187,8 +187,19 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = false
 		return
 	}
+
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.state = Follower
+		rf.votedFor = -1
+		rf.persist()
+	}
+
 	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
 		reply.VoteGranted = true
+		rf.votedFor = args.CandidateId
+		rf.persist()
+		rf.resetElectionTimer()
 	}
 	return
 }
@@ -271,7 +282,7 @@ func (rf *Raft) ticker() {
 
 		// Your code here (3A)
 		// Check if a leader election should be started.
-		log.Println(rf.me, rf.state)
+		log.Println(rf.me, rf.state, rf.currentTerm, rf.votedFor, rf.electionTimeout)
 		switch rf.state {
 		case Follower:
 			rf.doFollower()
@@ -287,9 +298,7 @@ func (rf *Raft) ticker() {
 	}
 }
 
-func (rf *Raft) doLeader() {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+func (rf *Raft) broadcast() {
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
@@ -297,6 +306,7 @@ func (rf *Raft) doLeader() {
 		go func(peer int) {
 			rf.mu.Lock()
 			if rf.state != Leader {
+				rf.mu.Unlock()
 				return
 			}
 			args := AppendEntriesArgs{
@@ -325,14 +335,19 @@ func (rf *Raft) doLeader() {
 	}
 }
 
+func (rf *Raft) doLeader() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.broadcast()
+	time.Sleep(50 * time.Millisecond)
+}
+
 func (rf *Raft) doFollower() {
 	select {
 	case <-rf.electionTimeout.C:
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
-		if rf.votedFor == -1 {
-			rf.state = Candidate
-		}
+		rf.state = Candidate
 	case <-time.After(10 * time.Millisecond):
 		log.Println("follower check timeout")
 	}
@@ -367,7 +382,8 @@ func (rf *Raft) doCandidate() {
 			if ok {
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
-				if reply.Term > currentTerm {
+				log.Println(rf.me, reply)
+				if reply.Term > rf.currentTerm {
 					rf.currentTerm = reply.Term
 					rf.state = Follower
 					rf.votedFor = -1
@@ -380,13 +396,15 @@ func (rf *Raft) doCandidate() {
 					votesMu.Unlock()
 					if vote > len(rf.peers)/2 {
 						rf.state = Leader
+						rf.broadcast()
 						// TODO init leader
+
 					}
 				}
 			}
 		}(i)
 	}
-	wg.Wait()
+	//wg.Wait()
 
 	rf.mu.Lock()
 	if rf.state == Candidate && currentTerm == rf.currentTerm {
