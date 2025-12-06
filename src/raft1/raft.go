@@ -365,16 +365,13 @@ func (rf *Raft) doCandidate() {
 	}
 
 	var votesMu sync.Mutex
-	var wg sync.WaitGroup
 
 	vote := 1
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
 		}
-		wg.Add(1)
 		go func(peer int) {
-			defer wg.Done()
 			var reply RequestVoteReply
 			ok := rf.sendRequestVote(peer, &arg, &reply)
 			if ok {
@@ -401,7 +398,6 @@ func (rf *Raft) doCandidate() {
 			}
 		}(i)
 	}
-	wg.Wait()
 
 	rf.mu.Lock()
 	if rf.state == Candidate && currentTerm == rf.currentTerm {
