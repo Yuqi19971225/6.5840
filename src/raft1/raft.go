@@ -7,7 +7,6 @@ package raft
 // Make() creates a new raft peer that implements the raft interface.
 
 import (
-	"log"
 	//	"bytes"
 	"math/rand"
 	"sync"
@@ -282,7 +281,6 @@ func (rf *Raft) ticker() {
 
 		// Your code here (3A)
 		// Check if a leader election should be started.
-		log.Println(rf.me, rf.state, rf.currentTerm, rf.votedFor, rf.electionTimeout)
 		switch rf.state {
 		case Follower:
 			rf.doFollower()
@@ -349,7 +347,7 @@ func (rf *Raft) doFollower() {
 		defer rf.mu.Unlock()
 		rf.state = Candidate
 	case <-time.After(10 * time.Millisecond):
-		log.Println("follower check timeout")
+
 	}
 }
 
@@ -382,7 +380,6 @@ func (rf *Raft) doCandidate() {
 			if ok {
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
-				log.Println(rf.me, reply)
 				if reply.Term > rf.currentTerm {
 					rf.currentTerm = reply.Term
 					rf.state = Follower
@@ -390,10 +387,10 @@ func (rf *Raft) doCandidate() {
 					rf.persist()
 					return
 				}
-				if reply.VoteGranted {
+				if reply.VoteGranted && rf.currentTerm == currentTerm {
 					votesMu.Lock()
+					defer votesMu.Unlock()
 					vote++
-					votesMu.Unlock()
 					if vote > len(rf.peers)/2 {
 						rf.state = Leader
 						rf.broadcast()
@@ -404,7 +401,7 @@ func (rf *Raft) doCandidate() {
 			}
 		}(i)
 	}
-	//wg.Wait()
+	wg.Wait()
 
 	rf.mu.Lock()
 	if rf.state == Candidate && currentTerm == rf.currentTerm {
