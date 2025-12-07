@@ -281,7 +281,10 @@ func (rf *Raft) ticker() {
 
 		// Your code here (3A)
 		// Check if a leader election should be started.
-		switch rf.state {
+		rf.mu.Lock()
+		state := rf.state
+		rf.mu.Unlock()
+		switch state {
 		case Follower:
 			rf.doFollower()
 		case Candidate:
@@ -341,8 +344,12 @@ func (rf *Raft) doLeader() {
 }
 
 func (rf *Raft) doFollower() {
+	rf.mu.Lock()
+	timeout := rf.electionTimeout
+	rf.mu.Unlock()
+
 	select {
-	case <-rf.electionTimeout.C:
+	case <-timeout.C:
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
 		rf.state = Candidate
@@ -386,7 +393,6 @@ func (rf *Raft) doCandidate() {
 				}
 				if reply.VoteGranted && rf.currentTerm == currentTerm {
 					votesMu.Lock()
-					defer votesMu.Unlock()
 					vote++
 					if vote > len(rf.peers)/2 {
 						rf.state = Leader
@@ -394,6 +400,7 @@ func (rf *Raft) doCandidate() {
 						// TODO init leader
 
 					}
+					votesMu.Unlock()
 				}
 			}
 		}(i)
